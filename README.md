@@ -12,5 +12,3 @@ Single project with publishing and consumption of message.
     3. Add logger to consumer to log message when a `HelloMessage` is consumed.
 3. Create back ground worker to publish messages for the consumer to read the messages.
     1. Add logger to log when message is published.
-
-## InMemory: In memory solution example
