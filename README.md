@@ -48,9 +48,16 @@ Admin UI:
         ```c#
         namespace Consumer.Consumers
         ```
-    3. Message.cs **NB the namespace of the message needs to be the same on all projects, is gets send with the message and used to identify which messages will be consumed**.
+    3. RabbitMessage.cs **NB the namespace of the message needs to be the same on all projects, is gets send with the message and used to identify which messages will be consumed**.
         ```c#
         namespace Company.Contracts
+        {
+            public record RabbitMessage
+            {
+                public int Count { get; set; }
+                public string Value { get; init; }
+            }
+        }
         ```
 5. Add `ILogger` to `RabbitMessageConsumer.cs` to visualize when a message comes through.
     ```c#
@@ -72,7 +79,8 @@ Admin UI:
             }
             public Task Consume(ConsumeContext<RabbitMessage> context)
             {
-                _logger.LogInformation("Message: {Value}", context.Message.Value);
+                _logger.LogInformation("Message #{Count}: {Value}",
+                    context.Message.Count, context.Message.Value);
                 return Task.CompletedTask;
             }
         }
@@ -114,6 +122,7 @@ public static IHostBuilder CreateHostBuilder(string[] args) =>
     {
         public record RabbitMessage
         {
+            public int Count { get; set; }
             public string Value { get; init; }
         }
     }
@@ -146,6 +155,7 @@ public static IHostBuilder CreateHostBuilder(string[] args) =>
                     _logger.LogInformation("Publishing message");
                     await _bus.Publish(new RabbitMessage
                     {
+                        Count = _counter,
                         Value = string.Format("message {0}", System.DateTime.Now)
                     }, stoppingToken);
 
@@ -185,3 +195,151 @@ public static IHostBuilder CreateHostBuilder(string[] args) =>
             });
         });
 ```
+
+8. Add Publish Observer to log failures on publishing.
+    1. Add `PublishObserver` to log faults
+    ```c#
+    using MassTransit;
+    using Microsoft.Extensions.Logging;
+    using System;
+    using System.Threading.Tasks;
+
+    namespace Publisher.Observers
+    {
+        public class PublishObserver : IPublishObserver
+        {
+            private ILogger<PublishObserver> _logger;
+
+            public PublishObserver(ILogger<PublishObserver> logger)
+            {
+                _logger = logger;
+            }
+            public Task PrePublish<T>(PublishContext<T> context)
+                where T : class
+            {
+                // called right before the message is published (sent to exchange or topic)
+                return Task.CompletedTask;
+            }
+
+            public Task PostPublish<T>(PublishContext<T> context)
+                where T : class
+            {
+                // called after the message is published (and acked by the broker if RabbitMQ)
+                return Task.CompletedTask;
+            }
+
+            public Task PublishFault<T>(PublishContext<T> context, Exception exception)
+                where T : class
+            {
+                // called if there was an exception publishing the message
+                _logger.LogError(exception, "Failed to publish message: {Message}",
+                    context.Message.ToString());
+                return Task.CompletedTask;
+            }
+        }
+    }
+    ```
+    2. Add `BusObserver` to connect a publish observer.
+    ```c#
+    using MassTransit;
+    using System;
+    using System.Threading.Tasks;
+
+    namespace Publisher.Observers
+    {
+        public class BusObserver :
+        IBusObserver
+        {
+            private IPublishObserver _publishObserver;
+
+            public BusObserver(IPublishObserver publishObserver)
+            {
+                _publishObserver = publishObserver;
+            }
+            public void PostCreate(IBus bus)
+            {
+                // called after the bus has been created, but before it has been started.
+            }
+
+            public void CreateFaulted(Exception exception)
+            {
+                // called if the bus creation fails for some reason
+            }
+
+            public Task PreStart(IBus bus)
+            {
+                // called just before the bus is started
+                bus.ConnectPublishObserver(_publishObserver);
+                return Task.CompletedTask;
+            }
+
+            public Task PostStart(IBus bus, Task<BusReady> busReady)
+            {
+                // called once the bus has been started successfully. The task can be used to wait for
+                // all of the receive endpoints to be ready.
+                return Task.CompletedTask;
+            }
+
+            public Task StartFaulted(IBus bus, Exception exception)
+            {
+                // called if the bus fails to start for some reason (dead battery, no fuel, etc.)
+                return Task.CompletedTask;
+            }
+
+            public Task PreStop(IBus bus)
+            {
+                // called just before the bus is stopped
+                return Task.CompletedTask;
+            }
+
+            public Task PostStop(IBus bus)
+            {
+                // called after the bus has been stopped
+                return Task.CompletedTask;
+            }
+
+            public Task StopFaulted(IBus bus, Exception exception)
+            {
+                // called if the bus fails to stop (no brakes)
+                return Task.CompletedTask;
+            }
+        }
+    }
+    ```
+    3. Add a `PublishObserver` to dependency injection for the bus observer and the `BusObserver` to MassTransit, in the Program.cs.
+    ```c#
+    public static IHostBuilder CreateHostBuilder(string[] args) =>
+        Host.CreateDefaultBuilder(args)
+            .ConfigureServices((hostContext, services) =>
+            {
+                services.AddMassTransit(x =>
+                {
+                    x.SetKebabCaseEndpointNameFormatter();
+
+                    // By default, sagas are in-memory, but should be changed to a durable
+                    // saga repository.
+                    x.SetInMemorySagaRepositoryProvider();
+
+                    var entryAssembly = Assembly.GetEntryAssembly();
+
+                    x.AddConsumers(entryAssembly);
+                    x.AddSagaStateMachines(entryAssembly);
+                    x.AddSagas(entryAssembly);
+                    x.AddActivities(entryAssembly);
+                    x.AddBusObserver<BusObserver>();
+
+                    x.UsingRabbitMq((context, cfg) =>
+                    {
+                        cfg.Host("localhost", "/", h =>
+                        {
+                            h.Username("guest");
+                            h.Password("guest");
+                        });
+
+                        cfg.ConfigureEndpoints(context);
+                    });
+                });
+                services.AddHostedService<PublishWorker>();
+                services.AddSingleton<IPublishObserver, PublishObserver>();
+            });
+    ```

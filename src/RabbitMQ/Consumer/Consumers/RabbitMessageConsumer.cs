@@ -16,7 +16,8 @@ namespace Consumer.Consumers
         }
         public Task Consume(ConsumeContext<RabbitMessage> context)
         {
-            _logger.LogInformation("Message: {Value}", context.Message.Value);
+            _logger.LogInformation("Message #{Count}: {Value}",
+                context.Message.Count, context.Message.Value);
             return Task.CompletedTask;
         }
     }

@@ -1,6 +1,7 @@
 using MassTransit;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Publisher.Observers;
 using System.Reflection;
 using System.Threading.Tasks;
 
@@ -31,6 +32,7 @@ namespace Publisher
                         x.AddSagaStateMachines(entryAssembly);
                         x.AddSagas(entryAssembly);
                         x.AddActivities(entryAssembly);
+                        x.AddBusObserver<BusObserver>();
 
                         x.UsingRabbitMq((context, cfg) =>
                         {
@@ -44,6 +46,7 @@ namespace Publisher
                         });
                     });
                     services.AddHostedService<PublishWorker>();
+                    services.AddSingleton<IPublishObserver, PublishObserver>();
                 });
     }
 }
